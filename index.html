@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Автоматизация табелей посещаемости</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f6fa;
+      margin: 0;
+      padding: 24px;
+      color: #202938;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: auto;
+    }
+
+    h1 { color: #263b63; }
+
+    .card {
+      background: white;
+      padding: 20px;
+      margin: 16px 0;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px #00000010;
+    }
+
+    input, button, select {
+      padding: 10px;
+      margin: 5px 0;
+      border: 1px solid #ccd3df;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    button {
+      background: #3159a6;
+      color: white;
+      cursor: pointer;
+      border: none;
+    }
+
+    button:hover { background: #244580; }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      background: white;
+      margin-top: 16px;
+    }
+
+    th, td {
+      border: 1px solid #d6dbe5;
+      padding: 9px;
+      text-align: center;
+    }
+
+    th { background: #e8edf7; }
+
+    td[contenteditable="true"] {
+      background: #fffdf1;
+    }
+
+    .table-wrap { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Табели посещаемости</h1>
+
+  <div class="card">
+    <h2>1. Источник данных</h2>
+    <label for="sheetUrl">Ссылка на Google Sheets:</label><br>
+    <input id="sheetUrl" style="width:90%"
+      value="https://docs.google.com/spreadsheets/d/1Ug42jUJU888ck-i4Fp93_JD5roZSYZTauGrktPSaJb8/edit">
+    <br>
+    <button onclick="loadSheet()">Загрузить таблицу</button>
+    <p id="status">Можно также загрузить данные из CSV-файла.</p>
+    <input type="file" id="csvFile" accept=".csv,text/csv">
+  </div>
+
+  <div class="card">
+    <h2>2. Посещаемость</h2>
+    <button onclick="addStudent()">Добавить студента</button>
+    <button onclick="exportCSV()">Экспорт CSV</button>
+    <div class="table-wrap">
+      <table id="attendance">
+        <thead>
+          <tr>
+            <th>ФИО</th>
+            <th>Учебные дни</th>
+            <th>Больничный лист</th>
+            <th>Практика</th>
+            <th>Итого</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. Формирование табелей</h2>
+    <button onclick="generateReport()">Сформировать сводный журнал</button>
+    <button onclick="window.print()">Печать / PDF</button>
+    <div id="report"></div>
+  </div>
+</div>
+
+<script>
+  let students = [];
+
+  function addStudent(name = "", study = 0, sick = 0, practice = 0) {
+    students.push({ name, study, sick, practice });
+    renderTable();
+  }
+
+  function renderTable() {
+    const tbody = document.querySelector("#attendance tbody");
+    tbody.innerHTML = "";
+
+    students.forEach((s, i) => {
+      const total = Number(s.study) + Number(s.sick) +
+                    Number(s.practice);
+      const tr = document.createElement("tr");
+
+      tr.innerHTML = `
+        <td contenteditable="true" data-field="name">${escapeHTML(s.name)}</td>
+        <td contenteditable="true" data-field="study">${s.study}</td>
+        <td contenteditable="true" data-field="sick">${s.sick}</td>
+        <td contenteditable="true" data-field="practice">${s.practice}</td>
+        <td>${total}</td>
+      `;
+
+      tr.querySelectorAll("[contenteditable]").forEach(cell => {
+        cell.addEventListener("input", () => {
+          const field = cell.dataset.field;
+          const value = cell.textContent.trim();
+
+          if (field === "name") {
+            students[i].name = value;
+          } else {
+            students[i][field] = Math.max(0, Number(value) || 0);
+          }
+
+          renderTablePreservingFocus(cell, i, field);
+        });
+      });
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderTablePreservingFocus(cell, index, field) {
+    // Обновляем таблицу после редактирования числового значения.
+    if (field === "name") return;
+    const tr = cell.closest("tr");
+    const total = Number(students[index].study) +
+                  Number(students[index].sick) +
+                  Number(students[index].practice);
+    tr.lastElementChild.textContent = total;
+  }
+
+  function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;",
+      '"': "&quot;", "'": "&#39;"
+    })[char]);
+  }
+
+  async function loadSheet() {
+    const url = document.getElementById("sheetUrl").value.trim();
+    const status = document.getElementById("status");
+
+    const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    if (!match) {
+      status.textContent = "Проверь ссылку на Google Sheets.";
+      return;
+    }
+
+    status.textContent =
+      "Для импорта таблица должна быть доступна для чтения. " +
+      "Если загрузка не работает, скачай её в формате CSV и загрузи ниже.";
+  }
+
+  document.getElementById("csvFile").addEventListener("change", async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const text = await file.text();
+    const rows = parseCSV(text);
+
+    if (rows.length < 2) {
+      document.getElementById("status").textContent =
+        "В CSV недостаточно данных.";
+      return;
+    }
+
+    students = rows.slice(1)
+      .filter(row => row[0])
+      .map(row => ({
+        name: row[0] || "",
+        study: Number(row[1]) || 0,
+        sick: Number(row[2]) || 0,
+        practice: Number(row[3]) || 0
+      }));
+
+    renderTable();
+    document.getElementById("status").textContent =
+      "CSV загружен. Проверь соответствие столбцов.";
+  });
+
+  function parseCSV(text) {
+    // Простой CSV-парсер для файлов без запятых внутри кавычек.
+    return text.trim().split(/\r?\n/).map(line =>
+      line.split(";").length > 1
+        ? line.split(";")
+        : line.split(",")
+    );
+  }
+
+  function exportCSV() {
+    const rows = [
+      ["ФИО", "Учебные дни", "Больничный лист", "Практика", "Итого"],
+      ...students.map(s => [
+        s.name, s.study, s.sick, s.practice,
+        Number(s.study) + Number(s.sick) + Number(s.practice)
+      ])
+    ];
+
+    const csv = "\uFEFF" + rows.map(row =>
+      row.map(value =>
+        '"' + String(value).replace(/"/g, '""') + '"'
+      ).join(";")
+    ).join("\r\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "tabel.csv";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  function generateReport() {
+    const report = document.getElementById("report");
+    report.innerHTML = "<h3>Сводный журнал</h3>";
+
+    const table = document.createElement("table");
+    table.innerHTML = `
+      <thead><tr>
+        <th>ФИО</th><th>Учебные дни</th>
+        <th>Больничный лист</th><th>Практика</th><th>Итого</th>
+      </tr></thead>
+    `;
+
+    const tbody = document.createElement("tbody");
+
+    students.forEach(s => {
+      const tr = document.createElement("tr");
+      [
+        s.name, s.study, s.sick, s.practice,
+        Number(s.study) + Number(s.sick) + Number(s.practice)
+      ].forEach(value => {
+        const td = document.createElement("td");
+        td.textContent = value;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    report.appendChild(table);
+  }
+
+  addStudent();
+</script>
+</body>
+</html>
+
